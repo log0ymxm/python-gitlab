@@ -99,6 +99,8 @@ class BaseManager(object):
         args = self._set_parent_args(**kwargs)
         if not self.obj_cls.canGet:
             raise NotImplementedError
+        if id is None and self.obj_cls.getRequiresId is True:
+            raise ValueError('The id argument must be defined.')
         return self.obj_cls.get(self.gitlab, id, **args)
 
     def list(self, **kwargs):
@@ -222,6 +224,8 @@ class GitlabObject(object):
                 value = getattr(self, attribute)
                 if isinstance(value, list):
                     value = ",".join(value)
+                if attribute == 'sudo':
+                    value = str(value)
                 data[attribute] = value
 
         data.update(extra_parameters)
@@ -398,22 +402,36 @@ class GitlabObject(object):
 
         if kwargs:
             for k, v in kwargs.items():
-                self.__dict__[k] = v
+                # Don't overwrite attributes returned by the server (#171)
+                if k not in self.__dict__ or not self.__dict__[k]:
+                    self.__dict__[k] = v
 
         # Special handling for api-objects that don't have id-number in api
         # responses. Currently only Labels and Files
         if not hasattr(self, "id"):
             self.id = None
 
-        self._set_managers()
+    def _set_manager(self, var, cls, attrs):
+        manager = cls(self.gitlab, self, attrs)
+        setattr(self, var, manager)
 
-    def _set_managers(self):
+    def __getattr__(self, name):
+        # build a manager if it doesn't exist yet
         for var, cls, attrs in self.managers:
-            manager = cls(self.gitlab, self, attrs)
-            setattr(self, var, manager)
+            if var != name:
+                continue
+            self._set_manager(var, cls, attrs)
+            return getattr(self, var)
+
+        raise AttributeError
 
     def __str__(self):
         return '%s => %s' % (type(self), str(self.__dict__))
+
+    def __repr__(self):
+        return '<%s %s:%s>' % (self.__class__.__name__,
+                               self.idAttr,
+                               getattr(self, self.idAttr))
 
     def display(self, pretty):
         if pretty:
@@ -567,6 +585,26 @@ class UserKeyManager(BaseManager):
     obj_cls = UserKey
 
 
+class UserProject(GitlabObject):
+    _url = '/projects/user/%(user_id)s'
+    _constructorTypes = {'owner': 'User', 'namespace': 'Group'}
+    canUpdate = False
+    canDelete = False
+    canList = False
+    canGet = False
+    requiredUrlAttrs = ['user_id']
+    requiredCreateAttrs = ['name']
+    optionalCreateAttrs = ['default_branch', 'issues_enabled', 'wall_enabled',
+                           'merge_requests_enabled', 'wiki_enabled',
+                           'snippets_enabled', 'public', 'visibility_level',
+                           'description', 'builds_enabled', 'public_builds',
+                           'import_url', 'only_allow_merge_if_build_succeeds']
+
+
+class UserProjectManager(BaseManager):
+    obj_cls = UserProject
+
+
 class User(GitlabObject):
     _url = '/users'
     shortPrintAttr = 'username'
@@ -580,10 +618,11 @@ class User(GitlabObject):
                            'projects_limit', 'extern_uid', 'provider', 'bio',
                            'admin', 'can_create_group', 'website_url',
                            'confirm', 'external']
-    managers = [
+    managers = (
         ('emails', UserEmailManager, [('user_id', 'id')]),
-        ('keys', UserKeyManager, [('user_id', 'id')])
-    ]
+        ('keys', UserKeyManager, [('user_id', 'id')]),
+        ('projects', UserProjectManager, [('user_id', 'id')]),
+    )
 
     def _data_for_gitlab(self, extra_parameters={}, update=False,
                          as_json=True):
@@ -688,15 +727,16 @@ class CurrentUser(GitlabObject):
     canUpdate = False
     canDelete = False
     shortPrintAttr = 'username'
-    managers = [
+    managers = (
         ('emails', CurrentUserEmailManager, [('user_id', 'id')]),
-        ('keys', CurrentUserKeyManager, [('user_id', 'id')])
-    ]
+        ('keys', CurrentUserKeyManager, [('user_id', 'id')]),
+    )
 
 
 class ApplicationSettings(GitlabObject):
     _url = '/application/settings'
     _id_in_update_url = False
+    getRequiresId = False
     optionalUpdateAttrs = ['after_sign_out_path',
                            'container_registry_token_expire_delay',
                            'default_branch_protection',
@@ -755,6 +795,7 @@ class KeyManager(BaseManager):
 class NotificationSettings(GitlabObject):
     _url = '/notification_settings'
     _id_in_update_url = False
+    getRequiresId = False
     optionalUpdateAttrs = ['level',
                            'notification_email',
                            'new_note',
@@ -774,6 +815,30 @@ class NotificationSettings(GitlabObject):
 
 class NotificationSettingsManager(BaseManager):
     obj_cls = NotificationSettings
+
+
+class Gitignore(GitlabObject):
+    _url = '/templates/gitignores'
+    canDelete = False
+    canUpdate = False
+    canCreate = False
+    idAttr = 'name'
+
+
+class GitignoreManager(BaseManager):
+    obj_cls = Gitignore
+
+
+class Gitlabciyml(GitlabObject):
+    _url = '/templates/gitlab_ci_ymls'
+    canDelete = False
+    canUpdate = False
+    canCreate = False
+    idAttr = 'name'
+
+
+class GitlabciymlManager(BaseManager):
+    obj_cls = Gitlabciyml
 
 
 class GroupIssue(GitlabObject):
@@ -865,14 +930,14 @@ class Group(GitlabObject):
     optionalCreateAttrs = ['description', 'visibility_level']
     optionalUpdateAttrs = ['name', 'path', 'description', 'visibility_level']
     shortPrintAttr = 'name'
-    managers = [
+    managers = (
         ('accessrequests', GroupAccessRequestManager, [('group_id', 'id')]),
         ('members', GroupMemberManager, [('group_id', 'id')]),
         ('notificationsettings', GroupNotificationSettingsManager,
          [('group_id', 'id')]),
         ('projects', GroupProjectManager, [('group_id', 'id')]),
-        ('issues', GroupIssueManager, [('group_id', 'id')])
-    ]
+        ('issues', GroupIssueManager, [('group_id', 'id')]),
+    )
 
     GUEST_ACCESS = gitlab.GUEST_ACCESS
     REPORTER_ACCESS = gitlab.REPORTER_ACCESS
@@ -959,6 +1024,54 @@ class LicenseManager(BaseManager):
     obj_cls = License
 
 
+class Snippet(GitlabObject):
+    _url = '/snippets'
+    _constructorTypes = {'author': 'User'}
+    requiredCreateAttrs = ['title', 'file_name', 'content']
+    optionalCreateAttrs = ['lifetime', 'visibility_level']
+    optionalUpdateAttrs = ['title', 'file_name', 'content', 'visibility_level']
+    shortPrintAttr = 'title'
+
+    def raw(self, streamed=False, action=None, chunk_size=1024, **kwargs):
+        """Return the raw content of a snippet.
+
+        Args:
+            streamed (bool): If True the data will be processed by chunks of
+                `chunk_size` and each chunk is passed to `action` for
+                treatment.
+            action (callable): Callable responsible of dealing with chunk of
+                data.
+            chunk_size (int): Size of each chunk.
+
+        Returns:
+            str: The snippet content.
+
+        Raises:
+            GitlabConnectionError: If the server cannot be reached.
+            GitlabGetError: If the server fails to perform the request.
+        """
+        url = ("/snippets/%(snippet_id)s/raw" % {'snippet_id': self.id})
+        r = self.gitlab._raw_get(url, **kwargs)
+        raise_error_from_response(r, GitlabGetError)
+        return utils.response_content(r, streamed, action, chunk_size)
+
+
+class SnippetManager(BaseManager):
+    obj_cls = Snippet
+
+    def public(self, **kwargs):
+        """List all the public snippets.
+
+        Args:
+            all (bool): If True, return all the items, without pagination
+            **kwargs: Additional arguments to send to GitLab.
+
+        Returns:
+            list(gitlab.Gitlab.Snippet): The list of snippets.
+        """
+        return self.gitlab._raw_list("/snippets/public", Snippet, **kwargs)
+
+
 class Namespace(GitlabObject):
     _url = '/namespaces'
     canGet = 'from_list'
@@ -992,8 +1105,10 @@ class ProjectBoard(GitlabObject):
     canUpdate = False
     canCreate = False
     canDelete = False
-    managers = [('lists', ProjectBoardListManager,
-                 [('project_id', 'project_id'), ('board_id', 'id')])]
+    managers = (
+        ('lists', ProjectBoardListManager,
+            [('project_id', 'project_id'), ('board_id', 'id')]),
+    )
 
 
 class ProjectBoardManager(BaseManager):
@@ -1166,10 +1281,12 @@ class ProjectCommit(GitlabObject):
     canCreate = False
     requiredUrlAttrs = ['project_id']
     shortPrintAttr = 'title'
-    managers = [('comments', ProjectCommitCommentManager,
-                 [('project_id', 'project_id'), ('commit_id', 'id')]),
-                ('statuses', ProjectCommitStatusManager,
-                 [('project_id', 'project_id'), ('commit_id', 'id')])]
+    managers = (
+        ('comments', ProjectCommitCommentManager,
+            [('project_id', 'project_id'), ('commit_id', 'id')]),
+        ('statuses', ProjectCommitStatusManager,
+            [('project_id', 'project_id'), ('commit_id', 'id')]),
+    )
 
     def diff(self, **kwargs):
         """Generate the commit diff."""
@@ -1247,6 +1364,19 @@ class ProjectKey(GitlabObject):
     requiredUrlAttrs = ['project_id']
     requiredCreateAttrs = ['title', 'key']
 
+    def enable(self):
+        """Enable a deploy key for a project."""
+        url = '/projects/%s/deploy_keys/%s/enable' % (self.project_id, self.id)
+        r = self.gitlab._raw_post(url)
+        raise_error_from_response(r, GitlabProjectDeployKeyError, 201)
+
+    def disable(self):
+        """Disable a deploy key for a project."""
+        url = '/projects/%s/deploy_keys/%s/disable' % (self.project_id,
+                                                       self.id)
+        r = self.gitlab._raw_delete(url)
+        raise_error_from_response(r, GitlabProjectDeployKeyError, 200)
+
 
 class ProjectKeyManager(BaseManager):
     obj_cls = ProjectKey
@@ -1286,7 +1416,7 @@ class ProjectHook(GitlabObject):
     requiredCreateAttrs = ['url']
     optionalCreateAttrs = ['push_events', 'issues_events', 'note_events',
                            'merge_requests_events', 'tag_push_events',
-                           'build_events', 'enable_ssl_verification']
+                           'build_events', 'enable_ssl_verification', 'token']
     shortPrintAttr = 'url'
 
 
@@ -1300,6 +1430,7 @@ class ProjectIssueNote(GitlabObject):
     canDelete = False
     requiredUrlAttrs = ['project_id', 'issue_id']
     requiredCreateAttrs = ['body']
+    optionalCreateAttrs = ['created_at']
 
 
 class ProjectIssueNoteManager(BaseManager):
@@ -1318,10 +1449,12 @@ class ProjectIssue(GitlabObject):
                            'labels', 'created_at']
     optionalUpdateAttrs = ['title', 'description', 'assignee_id',
                            'milestone_id', 'labels', 'created_at',
-                           'state_event']
+                           'updated_at', 'state_event']
     shortPrintAttr = 'title'
-    managers = [('notes', ProjectIssueNoteManager,
-                 [('project_id', 'project_id'), ('issue_id', 'id')])]
+    managers = (
+        ('notes', ProjectIssueNoteManager,
+            [('project_id', 'project_id'), ('issue_id', 'id')]),
+    )
 
     def _data_for_gitlab(self, extra_parameters={}, update=False,
                          as_json=True):
@@ -1479,6 +1612,19 @@ class ProjectTagManager(BaseManager):
     obj_cls = ProjectTag
 
 
+class ProjectMergeRequestDiff(GitlabObject):
+    _url = ('/projects/%(project_id)s/merge_requests/'
+            '%(merge_request_id)s/versions')
+    canCreate = False
+    canUpdate = False
+    canDelete = False
+    requiredUrlAttrs = ['project_id', 'merge_request_id']
+
+
+class ProjectMergeRequestDiffManager(BaseManager):
+    obj_cls = ProjectMergeRequestDiff
+
+
 class ProjectMergeRequestNote(GitlabObject):
     _url = '/projects/%(project_id)s/merge_requests/%(merge_request_id)s/notes'
     _constructorTypes = {'author': 'User'}
@@ -1503,8 +1649,12 @@ class ProjectMergeRequest(GitlabObject):
                            'milestone_id']
     optionalListAttrs = ['iid', 'state', 'order_by', 'sort']
 
-    managers = [('notes', ProjectMergeRequestNoteManager,
-                 [('project_id', 'project_id'), ('merge_request_id', 'id')])]
+    managers = (
+        ('notes', ProjectMergeRequestNoteManager,
+            [('project_id', 'project_id'), ('merge_request_id', 'id')]),
+        ('diffs', ProjectMergeRequestDiffManager,
+            [('project_id', 'project_id'), ('merge_request_id', 'id')]),
+    )
 
     def _data_for_gitlab(self, extra_parameters={}, update=False,
                          as_json=True):
@@ -1603,7 +1753,7 @@ class ProjectMergeRequest(GitlabObject):
             GitlabConnectionError: If the server cannot be reached.
             GitlabListError: If the server fails to perform the request.
         """
-        url = ('/projects/%s/merge_requests/%s/commits' %
+        url = ('/projects/%s/merge_requests/%s/changes' %
                (self.project_id, self.id))
         r = self.gitlab._raw_get(url, **kwargs)
         raise_error_from_response(r, GitlabListError)
@@ -1636,9 +1786,9 @@ class ProjectMergeRequest(GitlabObject):
         if merge_commit_message:
             data['merge_commit_message'] = merge_commit_message
         if should_remove_source_branch:
-            data['should_remove_source_branch'] = 'should_remove_source_branch'
+            data['should_remove_source_branch'] = True
         if merged_when_build_succeeds:
-            data['merged_when_build_succeeds'] = 'merged_when_build_succeeds'
+            data['merged_when_build_succeeds'] = True
 
         r = self.gitlab._raw_put(url, data=data, **kwargs)
         errors = {401: GitlabMRForbiddenError,
@@ -1812,13 +1962,10 @@ class ProjectSnippet(GitlabObject):
     optionalCreateAttrs = ['lifetime', 'visibility_level']
     optionalUpdateAttrs = ['title', 'file_name', 'code', 'visibility_level']
     shortPrintAttr = 'title'
-    managers = [('notes', ProjectSnippetNoteManager,
-                 [('project_id', 'project_id'), ('snippet_id', 'id')])]
-
-    def Content(self, **kwargs):
-        warnings.warn("`Content` is deprecated, use `content` instead",
-                      DeprecationWarning)
-        return self.content()
+    managers = (
+        ('notes', ProjectSnippetNoteManager,
+            [('project_id', 'project_id'), ('snippet_id', 'id')]),
+    )
 
     def content(self, streamed=False, action=None, chunk_size=1024, **kwargs):
         """Return the raw content of a snippet.
@@ -1877,6 +2024,7 @@ class ProjectService(GitlabObject):
     canCreate = False
     _id_in_update_url = False
     _id_in_delete_url = False
+    getRequiresId = False
     requiredUrlAttrs = ['project_id', 'service_name']
 
     _service_attrs = {
@@ -1899,8 +2047,16 @@ class ProjectService(GitlabObject):
                                   'server')),
         'irker': (('recipients', ), ('default_irc_uri', 'server_port',
                                      'server_host', 'colorize_messages')),
-        'jira': (('new_issue_url', 'project_url', 'issues_url'),
-                 ('api_url', 'description', 'username', 'password')),
+        'jira': (tuple(), (
+                 # Required fields in GitLab >= 8.14
+                 'url', 'project_key',
+
+                 # Required fields in GitLab < 8.14
+                 'new_issue_url', 'project_url', 'issues_url', 'api_url',
+                 'description',
+
+                 # Optional fields
+                 'username', 'password', 'jira_issue_transition_id')),
         'pivotaltracker': (('token', ), tuple()),
         'pushover': (('api_key', 'user_key', 'priority'), ('device', 'sound')),
         'redmine': (('new_issue_url', 'project_url', 'issues_url'),
@@ -1990,23 +2146,26 @@ class Project(GitlabObject):
     _url = '/projects'
     _constructorTypes = {'owner': 'User', 'namespace': 'Group'}
     requiredCreateAttrs = ['name']
-    optionalCreateAttrs = ['default_branch', 'issues_enabled', 'wall_enabled',
-                           'merge_requests_enabled', 'wiki_enabled',
+    optionalCreateAttrs = ['path', 'namespace_id', 'description',
+                           'issues_enabled', 'merge_requests_enabled',
+                           'builds_enabled', 'wiki_enabled',
                            'snippets_enabled', 'container_registry_enabled',
-                           'public', 'visibility_level', 'namespace_id',
-                           'description', 'path', 'import_url',
-                           'builds_enabled', 'public_builds',
-                           'only_allow_merge_if_build_succeeds']
-    optionalUpdateAttrs = ['name', 'default_branch', 'issues_enabled',
-                           'wall_enabled', 'merge_requests_enabled',
-                           'wiki_enabled', 'snippets_enabled',
-                           'container_registry_enabled', 'public',
-                           'visibility_level', 'namespace_id', 'description',
-                           'path', 'import_url', 'builds_enabled',
-                           'public_builds',
-                           'only_allow_merge_if_build_succeeds']
+                           'shared_runners_enabled', 'public',
+                           'visibility_level', 'import_url', 'public_builds',
+                           'only_allow_merge_if_build_succeeds',
+                           'only_allow_merge_if_all_discussions_are_resolved',
+                           'lfs_enabled', 'request_access_enabled']
+    optionalUpdateAttrs = ['name', 'path', 'default_branch', 'description',
+                           'issues_enabled', 'merge_requests_enabled',
+                           'builds_enabled', 'wiki_enabled',
+                           'snippets_enabled', 'container_registry_enabled',
+                           'shared_runners_enabled', 'public',
+                           'visibility_level', 'import_url', 'public_builds',
+                           'only_allow_merge_if_build_succeeds',
+                           'only_allow_merge_if_all_discussions_are_resolved',
+                           'lfs_enabled', 'request_access_enabled']
     shortPrintAttr = 'path'
-    managers = [
+    managers = (
         ('accessrequests', ProjectAccessRequestManager,
          [('project_id', 'id')]),
         ('boards', ProjectBoardManager, [('project_id', 'id')]),
@@ -2014,10 +2173,6 @@ class Project(GitlabObject):
         ('branches', ProjectBranchManager, [('project_id', 'id')]),
         ('builds', ProjectBuildManager, [('project_id', 'id')]),
         ('commits', ProjectCommitManager, [('project_id', 'id')]),
-        ('commit_comments', ProjectCommitCommentManager,
-         [('project_id', 'id')]),
-        ('commit_statuses', ProjectCommitStatusManager,
-         [('project_id', 'id')]),
         ('deployments', ProjectDeploymentManager, [('project_id', 'id')]),
         ('environments', ProjectEnvironmentManager, [('project_id', 'id')]),
         ('events', ProjectEventManager, [('project_id', 'id')]),
@@ -2039,16 +2194,11 @@ class Project(GitlabObject):
         ('tags', ProjectTagManager, [('project_id', 'id')]),
         ('triggers', ProjectTriggerManager, [('project_id', 'id')]),
         ('variables', ProjectVariableManager, [('project_id', 'id')]),
-    ]
+    )
 
     VISIBILITY_PRIVATE = gitlab.VISIBILITY_PRIVATE
     VISIBILITY_INTERNAL = gitlab.VISIBILITY_INTERNAL
     VISIBILITY_PUBLIC = gitlab.VISIBILITY_PUBLIC
-
-    def tree(self, path='', ref_name='', **kwargs):
-        warnings.warn("`tree` is deprecated, use `repository_tree` instead",
-                      DeprecationWarning)
-        return self.repository_tree(path, ref_name, **kwargs)
 
     def repository_tree(self, path='', ref_name='', **kwargs):
         """Return a list of files in the repository.
@@ -2075,11 +2225,6 @@ class Project(GitlabObject):
         r = self.gitlab._raw_get(url, **kwargs)
         raise_error_from_response(r, GitlabGetError)
         return r.json()
-
-    def blob(self, sha, filepath, **kwargs):
-        warnings.warn("`blob` is deprecated, use `repository_blob` instead",
-                      DeprecationWarning)
-        return self.repository_blob(sha, filepath, **kwargs)
 
     def repository_blob(self, sha, filepath, streamed=False, action=None,
                         chunk_size=1024, **kwargs):
@@ -2168,12 +2313,6 @@ class Project(GitlabObject):
         raise_error_from_response(r, GitlabListError)
         return r.json()
 
-    def archive(self, sha=None, **kwargs):
-        warnings.warn("`archive` is deprecated, "
-                      "use `repository_archive` instead",
-                      DeprecationWarning)
-        return self.repository_archive(sha, **kwargs)
-
     def repository_archive(self, sha=None, streamed=False, action=None,
                            chunk_size=1024, **kwargs):
         """Return a tarball of the repository.
@@ -2200,49 +2339,6 @@ class Project(GitlabObject):
         r = self.gitlab._raw_get(url, streamed=streamed, **kwargs)
         raise_error_from_response(r, GitlabGetError)
         return utils.response_content(r, streamed, action, chunk_size)
-
-    def create_file(self, path, branch, content, message, **kwargs):
-        """Creates file in project repository
-
-        Args:
-            path (str): Full path to new file.
-            branch (str): The name of branch.
-            content (str): Content of the file.
-            message (str): Commit message.
-            **kwargs: Arbitrary keyword arguments.
-
-        Raises:
-            GitlabConnectionError: If the server cannot be reached.
-            GitlabCreateError: If the server fails to perform the request.
-        """
-        warnings.warn("`create_file` is deprecated, "
-                      "use `files.create()` instead",
-                      DeprecationWarning)
-        url = "/projects/%s/repository/files" % self.id
-        url += ("?file_path=%s&branch_name=%s&content=%s&commit_message=%s" %
-                (path, branch, content, message))
-        r = self.gitlab._raw_post(url, data=None, content_type=None, **kwargs)
-        raise_error_from_response(r, GitlabCreateError, 201)
-
-    def update_file(self, path, branch, content, message, **kwargs):
-        warnings.warn("`update_file` is deprecated, "
-                      "use `files.update()` instead",
-                      DeprecationWarning)
-        url = "/projects/%s/repository/files" % self.id
-        url += ("?file_path=%s&branch_name=%s&content=%s&commit_message=%s" %
-                (path, branch, content, message))
-        r = self.gitlab._raw_put(url, data=None, content_type=None, **kwargs)
-        raise_error_from_response(r, GitlabUpdateError)
-
-    def delete_file(self, path, branch, message, **kwargs):
-        warnings.warn("`delete_file` is deprecated, "
-                      "use `files.delete()` instead",
-                      DeprecationWarning)
-        url = "/projects/%s/repository/files" % self.id
-        url += ("?file_path=%s&branch_name=%s&commit_message=%s" %
-                (path, branch, message))
-        r = self.gitlab._raw_delete(url, **kwargs)
-        raise_error_from_response(r, GitlabDeleteError)
 
     def create_fork_relation(self, forked_from_id):
         """Create a forked from/to relation between existing projects.
@@ -2299,7 +2395,7 @@ class Project(GitlabObject):
         raise_error_from_response(r, GitlabDeleteError, [200, 304])
         return Project(self.gitlab, r.json()) if r.status_code == 200 else self
 
-    def archive_(self, **kwargs):
+    def archive(self, **kwargs):
         """Archive a project.
 
         Returns:
@@ -2314,7 +2410,12 @@ class Project(GitlabObject):
         raise_error_from_response(r, GitlabCreateError, 201)
         return Project(self.gitlab, r.json()) if r.status_code == 201 else self
 
-    def unarchive_(self, **kwargs):
+    def archive_(self, **kwargs):
+        warnings.warn("`archive_()` is deprecated, use `archive()` instead",
+                      DeprecationWarning)
+        return self.archive(**kwargs)
+
+    def unarchive(self, **kwargs):
         """Unarchive a project.
 
         Returns:
@@ -2329,6 +2430,12 @@ class Project(GitlabObject):
         raise_error_from_response(r, GitlabCreateError, 201)
         return Project(self.gitlab, r.json()) if r.status_code == 201 else self
 
+    def unarchive_(self, **kwargs):
+        warnings.warn("`unarchive_()` is deprecated, "
+                      "use `unarchive()` instead",
+                      DeprecationWarning)
+        return self.unarchive(**kwargs)
+
     def share(self, group_id, group_access, **kwargs):
         """Share the project with a group.
 
@@ -2342,6 +2449,27 @@ class Project(GitlabObject):
         """
         url = "/projects/%s/share" % self.id
         data = {'group_id': group_id, 'group_access': group_access}
+        r = self.gitlab._raw_post(url, data=data, **kwargs)
+        raise_error_from_response(r, GitlabCreateError, 201)
+
+    def trigger_build(self, ref, token, variables={}, **kwargs):
+        """Trigger a CI build.
+
+        See https://gitlab.com/help/ci/triggers/README.md#trigger-a-build
+
+        Args:
+            ref (str): Commit to build; can be a commit SHA, a branch name, ...
+            token (str): The trigger token
+            variables (dict): Variables passed to the build script
+
+        Raises:
+            GitlabConnectionError: If the server cannot be reached.
+            GitlabCreateError: If the server fails to perform the request.
+        """
+        url = "/projects/%s/trigger/builds" % self.id
+        form = {r'variables[%s]' % k: v for k, v in six.iteritems(variables)}
+        data = {'ref': ref, 'token': token}
+        data.update(form)
         r = self.gitlab._raw_post(url, data=data, **kwargs)
         raise_error_from_response(r, GitlabCreateError, 201)
 
@@ -2410,22 +2538,6 @@ class TodoManager(BaseManager):
         return int(r.text)
 
 
-class UserProject(GitlabObject):
-    _url = '/projects/user/%(user_id)s'
-    _constructorTypes = {'owner': 'User', 'namespace': 'Group'}
-    canUpdate = False
-    canDelete = False
-    canList = False
-    canGet = False
-    requiredUrlAttrs = ['user_id']
-    requiredCreateAttrs = ['name']
-    optionalCreateAttrs = ['default_branch', 'issues_enabled', 'wall_enabled',
-                           'merge_requests_enabled', 'wiki_enabled',
-                           'snippets_enabled', 'public', 'visibility_level',
-                           'description', 'builds_enabled', 'public_builds',
-                           'import_url', 'only_allow_merge_if_build_succeeds']
-
-
 class ProjectManager(BaseManager):
     obj_cls = Project
 
@@ -2490,10 +2602,6 @@ class ProjectManager(BaseManager):
         return self.gitlab._raw_list("/projects/starred", Project, **kwargs)
 
 
-class UserProjectManager(BaseManager):
-    obj_cls = UserProject
-
-
 class TeamMemberManager(BaseManager):
     obj_cls = TeamMember
 
@@ -2516,10 +2624,10 @@ class Team(GitlabObject):
     shortPrintAttr = 'name'
     requiredCreateAttrs = ['name', 'path']
     canUpdate = False
-    managers = [
+    managers = (
         ('members', TeamMemberManager, [('team_id', 'id')]),
-        ('projects', TeamProjectManager, [('team_id', 'id')])
-    ]
+        ('projects', TeamProjectManager, [('team_id', 'id')]),
+    )
 
 
 class TeamManager(BaseManager):

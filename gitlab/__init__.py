@@ -16,24 +16,24 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """Wrapper for the GitLab API."""
 
-from __future__ import print_function
-from __future__ import division
-from __future__ import absolute_import
+from __future__ import absolute_import, division, print_function
+
 import inspect
 import itertools
 import json
+import re
 import warnings
 
-import requests
 import six
 
 import gitlab.config
+import requests
 from gitlab.const import *  # noqa
 from gitlab.exceptions import *  # noqa
 from gitlab.objects import *  # noqa
 
 __title__ = 'python-gitlab'
-__version__ = '0.16'
+__version__ = '0.18'
 __author__ = 'Gauvain Pocentek'
 __email__ = 'gauvain@pocentek.net'
 __license__ = 'LGPL3'
@@ -62,89 +62,9 @@ class Gitlab(object):
         email (str): The user email or login.
         password (str): The user password (associated with email).
         ssl_verify (bool): Whether SSL certificates should be validated.
-        timeout (float or tuple(float,float)): Timeout to use for requests to
-            the GitLab server.
-        http_username: (str): Username for HTTP authentication
-        http_password: (str): Password for HTTP authentication
-    Attributes:
-        user_emails (UserEmailManager): Manager for GitLab users' emails.
-        user_keys (UserKeyManager): Manager for GitLab users' SSH keys.
-        users (UserManager): Manager for GitLab users
-        broadcastmessages (BroadcastMessageManager): Manager for broadcast
-            messages
-        keys (DeployKeyManager): Manager for deploy keys
-        group_accessrequests (GroupAccessRequestManager): Manager for GitLab
-            groups access requests
-        group_issues (GroupIssueManager): Manager for GitLab group issues
-        group_projects (GroupProjectManager): Manager for GitLab group projects
-        group_members (GroupMemberManager): Manager for GitLab group members
-        groups (GroupManager): Manager for GitLab members
-        hooks (HookManager): Manager for GitLab hooks
-        issues (IssueManager): Manager for GitLab issues
-        licenses (LicenseManager): Manager for licenses
-        namespaces (NamespaceManager): Manager for namespaces
-        notificationsettings (NotificationSettingsManager): Manager for global
-            notification settings
-        project_accessrequests (ProjectAccessRequestManager): Manager for
-            GitLab projects access requests
-        project_boards (ProjectBoardManager): Manager for GitLab projects
-            boards
-        project_board_lists (ProjectBoardListManager): Manager for GitLab
-            project board lists
-        project_branches (ProjectBranchManager): Manager for GitLab projects
-            branches
-        project_builds (ProjectBuildManager): Manager for GitLab projects
-            builds
-        project_commits (ProjectCommitManager): Manager for GitLab projects
-            commits
-        project_commit_comments (ProjectCommitCommentManager): Manager for
-            GitLab projects commits comments
-        project_commit_statuses (ProjectCommitStatusManager): Manager for
-            GitLab projects commits statuses
-        project_deployments (ProjectDeploymentManager): Manager for GitLab
-            projects deployments
-        project_keys (ProjectKeyManager): Manager for GitLab projects keys
-        project_environments (ProjectEnvironmentManager): Manager for GitLab
-            projects environments
-        project_events (ProjectEventManager): Manager for GitLab projects
-            events
-        project_forks (ProjectForkManager): Manager for GitLab projects forks
-        project_hooks (ProjectHookManager): Manager for GitLab projects hooks
-        project_issue_notes (ProjectIssueNoteManager): Manager for GitLab notes
-            on issues
-        project_issues (ProjectIssueManager): Manager for GitLab projects
-            issues
-        project_members (ProjectMemberManager): Manager for GitLab projects
-            members
-        project_notes (ProjectNoteManager): Manager for GitLab projects notes
-        project_pipelines (ProjectPipelineManager): Manager for GitLab projects
-            pipelines
-        project_tags (ProjectTagManager): Manager for GitLab projects tags
-        project_mergerequest_notes (ProjectMergeRequestNoteManager): Manager
-            for GitLab notes on merge requests
-        project_mergerequests (ProjectMergeRequestManager): Manager for GitLab
-            projects merge requests
-        project_milestones (ProjectMilestoneManager): Manager for GitLab
-            projects milestones
-        project_labels (ProjectLabelManager): Manager for GitLab projects
-            labels
-        project_files (ProjectFileManager): Manager for GitLab projects files
-        project_services (ProjectServiceManager): Manager for the GitLab
-            projects services
-        project_snippet_notes (ProjectSnippetNoteManager): Manager for GitLab
-            note on snippets
-        project_snippets (ProjectSnippetManager): Manager for GitLab projects
-            snippets
-        project_triggers (ProjectTriggerManager): Manager for build triggers
-        project_variables (ProjectVariableManager): Manager for build variables
-        user_projects (UserProjectManager): Manager for GitLab projects users
-        projects (ProjectManager): Manager for GitLab projects
-        runners (RunnerManager): Manager for the CI runners
-        settings (ApplicationSettingsManager): manager for the Gitlab settings
-        team_members (TeamMemberManager): Manager for GitLab teams members
-        team_projects (TeamProjectManager): Manager for GitLab teams projects
-        teams (TeamManager): Manager for GitLab teams
-        todos (TodoManager): Manager for user todos
+        timeout (float): Timeout to use for requests to the GitLab server.
+        http_username (str): Username for HTTP authentication
+        http_password (str): Password for HTTP authentication
     """
 
     def __init__(self, url, private_token=None, oauth_token=None, email=None,
@@ -169,60 +89,48 @@ class Gitlab(object):
         #: Create a session object for requests
         self.session = requests.Session()
 
-        self.settings = ApplicationSettingsManager(self)
-        self.user_emails = UserEmailManager(self)
-        self.user_keys = UserKeyManager(self)
-        self.users = UserManager(self)
         self.broadcastmessages = BroadcastMessageManager(self)
         self.keys = KeyManager(self)
-        self.group_accessrequests = GroupAccessRequestManager(self)
-        self.group_issues = GroupIssueManager(self)
-        self.group_projects = GroupProjectManager(self)
-        self.group_members = GroupMemberManager(self)
+        self.gitlabciymls = GitlabciymlManager(self)
+        self.gitignores = GitignoreManager(self)
         self.groups = GroupManager(self)
         self.hooks = HookManager(self)
         self.issues = IssueManager(self)
         self.licenses = LicenseManager(self)
         self.namespaces = NamespaceManager(self)
         self.notificationsettings = NotificationSettingsManager(self)
-        self.project_accessrequests = ProjectAccessRequestManager(self)
-        self.project_boards = ProjectBoardManager(self)
-        self.project_board_listss = ProjectBoardListManager(self)
-        self.project_branches = ProjectBranchManager(self)
-        self.project_builds = ProjectBuildManager(self)
-        self.project_commits = ProjectCommitManager(self)
-        self.project_commit_comments = ProjectCommitCommentManager(self)
-        self.project_commit_statuses = ProjectCommitStatusManager(self)
-        self.project_deployments = ProjectDeploymentManager(self)
-        self.project_keys = ProjectKeyManager(self)
-        self.project_environments = ProjectEnvironmentManager(self)
-        self.project_events = ProjectEventManager(self)
-        self.project_forks = ProjectForkManager(self)
-        self.project_hooks = ProjectHookManager(self)
-        self.project_issue_notes = ProjectIssueNoteManager(self)
-        self.project_issues = ProjectIssueManager(self)
-        self.project_members = ProjectMemberManager(self)
-        self.project_notes = ProjectNoteManager(self)
-        self.project_pipelines = ProjectPipelineManager(self)
-        self.project_tags = ProjectTagManager(self)
-        self.project_mergerequest_notes = ProjectMergeRequestNoteManager(self)
-        self.project_mergerequests = ProjectMergeRequestManager(self)
-        self.project_milestones = ProjectMilestoneManager(self)
-        self.project_labels = ProjectLabelManager(self)
-        self.project_files = ProjectFileManager(self)
-        self.project_services = ProjectServiceManager(self)
-        self.project_snippet_notes = ProjectSnippetNoteManager(self)
-        self.project_snippets = ProjectSnippetManager(self)
-        self.project_triggers = ProjectTriggerManager(self)
-        self.project_variables = ProjectVariableManager(self)
-        self.user_projects = UserProjectManager(self)
         self.projects = ProjectManager(self)
         self.runners = RunnerManager(self)
-        self.team_members = TeamMemberManager(self)
-        self.team_projects = TeamProjectManager(self)
+        self.settings = ApplicationSettingsManager(self)
+        self.sidekiq = SidekiqManager(self)
+        self.snippets = SnippetManager(self)
+        self.users = UserManager(self)
         self.teams = TeamManager(self)
         self.todos = TodoManager(self)
-        self.sidekiq = SidekiqManager(self)
+
+        # build the "submanagers"
+        for parent_cls in six.itervalues(globals()):
+            if (not inspect.isclass(parent_cls)
+               or not issubclass(parent_cls, GitlabObject)
+               or parent_cls == CurrentUser):
+                continue
+
+            if not parent_cls.managers:
+                continue
+
+            for var, cls, attrs in parent_cls.managers:
+                var_name = '%s_%s' % (self._cls_to_manager_prefix(parent_cls),
+                                      var)
+                manager = cls(self)
+                setattr(self, var_name, manager)
+
+    def _cls_to_manager_prefix(self, cls):
+        # Manage bad naming decisions
+        camel_case = (cls.__name__
+                      .replace('NotificationSettings', 'Notificationsettings')
+                      .replace('MergeRequest', 'Mergerequest')
+                      .replace('AccessRequest', 'Accessrequest'))
+        return re.sub(r'(.)([A-Z])', r'\1_\2', camel_case).lower()
 
     @staticmethod
     def from_config(gitlab_id=None, config_files=None):
@@ -329,13 +237,6 @@ class Gitlab(object):
         else:
             return url
 
-    def _create_headers(self, content_type=None, headers={}):
-        request_headers = self.headers.copy()
-        request_headers.update(headers)
-        if content_type is not None:
-            request_headers['Content-type'] = content_type
-        return request_headers
-
     def set_token(self, token=None, oauth_token=None):
         """Sets the private token for authentication.
 
@@ -390,29 +291,36 @@ class Gitlab(object):
         requests_log.setLevel(logging.DEBUG)
         requests_log.propagate = True
 
+    def _create_headers(self, content_type=None):
+        request_headers = self.headers.copy()
+        if content_type is not None:
+            request_headers['Content-type'] = content_type
+        return request_headers
+
+    def _create_auth(self):
+        if self.http_username and self.http_password:
+            return requests.auth.HTTPBasicAuth(self.http_username,
+                                               self.http_password)
+        return None
+
+    def _get_session_opts(self, content_type):
+        return {
+            'headers': self._create_headers(content_type),
+            'auth': self._create_auth(),
+            'timeout': self.timeout,
+            'verify': self.ssl_verify
+        }
+
     def _raw_get(self, path_, content_type=None, streamed=False, **kwargs):
         if path_.startswith('http://') or path_.startswith('https://'):
             url = path_
         else:
             url = '%s%s' % (self._url, path_)
 
-        headers = self._create_headers(content_type)
-
-        if 'Authorization' in self.headers:
-            auth = None
-        else:
-            auth = requests.auth.HTTPBasicAuth(
-                self.http_username,
-                self.http_password)
-
+        opts = self._get_session_opts(content_type)
         try:
-            return self.session.get(url,
-                                    params=kwargs,
-                                    headers=headers,
-                                    verify=self.ssl_verify,
-                                    timeout=self.timeout,
-                                    stream=streamed,
-                                    auth=auth)
+            return self.session.get(url, params=kwargs, stream=streamed,
+                                    **opts)
         except Exception as e:
             raise GitlabConnectionError(
                 "Can't connect to GitLab server (%s)" % e)
@@ -452,48 +360,27 @@ class Gitlab(object):
 
     def _raw_post(self, path_, data=None, content_type=None, **kwargs):
         url = '%s%s' % (self._url, path_)
-        headers = self._create_headers(content_type)
+        opts = self._get_session_opts(content_type)
         try:
-            return self.session.post(url, params=kwargs, data=data,
-                                     headers=headers,
-                                     verify=self.ssl_verify,
-                                     timeout=self.timeout,
-                                     auth=requests.auth.HTTPBasicAuth(
-                                         self.http_username,
-                                         self.http_password))
+            return self.session.post(url, params=kwargs, data=data, **opts)
         except Exception as e:
             raise GitlabConnectionError(
                 "Can't connect to GitLab server (%s)" % e)
 
     def _raw_put(self, path_, data=None, content_type=None, **kwargs):
         url = '%s%s' % (self._url, path_)
-        headers = self._create_headers(content_type)
-
+        opts = self._get_session_opts(content_type)
         try:
-            return self.session.put(url, data=data, params=kwargs,
-                                    headers=headers,
-                                    verify=self.ssl_verify,
-                                    timeout=self.timeout,
-                                    auth=requests.auth.HTTPBasicAuth(
-                                        self.http_username,
-                                        self.http_password))
+            return self.session.put(url, data=data, params=kwargs, **opts)
         except Exception as e:
             raise GitlabConnectionError(
                 "Can't connect to GitLab server (%s)" % e)
 
     def _raw_delete(self, path_, content_type=None, **kwargs):
         url = '%s%s' % (self._url, path_)
-        headers = self._create_headers(content_type)
-
+        opts = self._get_session_opts(content_type)
         try:
-            return self.session.delete(url,
-                                       params=kwargs,
-                                       headers=headers,
-                                       verify=self.ssl_verify,
-                                       timeout=self.timeout,
-                                       auth=requests.auth.HTTPBasicAuth(
-                                           self.http_username,
-                                           self.http_password))
+            return self.session.delete(url, params=kwargs, **opts)
         except Exception as e:
             raise GitlabConnectionError(
                 "Can't connect to GitLab server (%s)" % e)
@@ -601,7 +488,8 @@ class Gitlab(object):
             params.pop(obj.idAttr)
 
         r = self._raw_delete(url, **params)
-        raise_error_from_response(r, GitlabDeleteError)
+        raise_error_from_response(r, GitlabDeleteError,
+                                  expected_code=[200, 204])
         return True
 
     def create(self, obj, **kwargs):

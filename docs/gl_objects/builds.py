@@ -80,7 +80,7 @@ build.artifacts()
 # stream artifacts
 class Foo(object):
     def __init__(self):
-        self._fd = open('artifacts.zip', 'w')
+        self._fd = open('artifacts.zip', 'wb')
 
     def __call__(self, chunk):
         self._fd.write(chunk)
@@ -110,3 +110,9 @@ build.erase()
 # play
 build.play()
 # end play
+
+# trigger run
+p = gl.projects.get(project_id)
+p.trigger_build('master', trigger_token,
+                {'extra_var1': 'foo', 'extra_var2': 'bar'})
+# end trigger run

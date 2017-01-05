@@ -8,6 +8,11 @@ import sphinx.ext.napoleon as napoleon
 from sphinx.ext.napoleon.docstring import GoogleDocstring
 
 
+def classref(value, short=True):
+    tilde = '~' if short else ''
+    return ':class:`%sgitlab.objects.%s`' % (tilde, value.__name__)
+
+
 def setup(app):
     app.connect('autodoc-process-docstring', _process_docstring)
     app.connect('autodoc-skip-member', napoleon._skip_member)
@@ -28,58 +33,29 @@ def _process_docstring(app, what, name, obj, options, lines):
 
 
 class GitlabDocstring(GoogleDocstring):
-    def _build_doc(self):
-        cls = self._obj.obj_cls
-        opt_get_list = cls.optionalGetAttrs
-        opt_list_list = cls.optionalListAttrs
-        md_create_list = list(itertools.chain(cls.requiredUrlAttrs,
-                                              cls.requiredCreateAttrs))
-        opt_create_list = cls.optionalCreateAttrs
-
-        opt_get_keys = "None"
-        if opt_get_list:
-            opt_get_keys = ", ".join(['``%s``' % i for i in opt_get_list])
-
-        opt_list_keys = "None"
-        if opt_list_list:
-            opt_list_keys = ", ".join(['``%s``' % i for i in opt_list_list])
-
-        md_create_keys = opt_create_keys = "None"
-        if md_create_list:
-            md_create_keys = ", ".join(['``%s``' % i for i in md_create_list])
-        if opt_create_list:
-            opt_create_keys = ", ".join(['``%s``' % i for i in
-                                         opt_create_list])
-
-        md_update_list = list(itertools.chain(cls.requiredUrlAttrs,
-                                              cls.requiredUpdateAttrs))
-        opt_update_list = cls.optionalUpdateAttrs
-
-        md_update_keys = opt_update_keys = "None"
-        if md_update_list:
-            md_update_keys = ", ".join(['``%s``' % i for i in md_update_list])
-        if opt_update_list:
-            opt_update_keys = ", ".join(['``%s``' % i for i in
-                                         opt_update_list])
-
-        tmpl_file = os.path.join(os.path.dirname(__file__), 'template.j2')
-        with open(tmpl_file) as fd:
-            template = jinja2.Template(fd.read(), trim_blocks=False)
-            output = template.render(filename=tmpl_file,
-                                     cls=cls,
-                                     md_create_keys=md_create_keys,
-                                     opt_create_keys=opt_create_keys,
-                                     md_update_keys=md_update_keys,
-                                     opt_update_keys=opt_update_keys,
-                                     opt_get_keys=opt_get_keys,
-                                     opt_list_keys=opt_list_keys)
+    def _build_doc(self, tmpl, **kwargs):
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader(
+            os.path.dirname(__file__)), trim_blocks=False)
+        env.filters['classref'] = classref
+        template = env.get_template(tmpl)
+        output = template.render(**kwargs)
 
         return output.split('\n')
 
     def __init__(self, *args, **kwargs):
         super(GitlabDocstring, self).__init__(*args, **kwargs)
 
-        if not hasattr(self._obj, 'obj_cls') or self._obj.obj_cls is None:
-            return
-
-        self._parsed_lines = self._build_doc()
+        if getattr(self._obj, '__name__', None) == 'Gitlab':
+            mgrs = []
+            gl = self._obj('http://dummy', private_token='dummy')
+            for item in vars(gl).items():
+                if hasattr(item[1], 'obj_cls'):
+                    mgrs.append(item)
+            self._parsed_lines.extend(self._build_doc('gl_tmpl.j2',
+                                                      mgrs=sorted(mgrs)))
+        elif hasattr(self._obj, 'obj_cls') and self._obj.obj_cls is not None:
+            self._parsed_lines.extend(self._build_doc('manager_tmpl.j2',
+                                                      cls=self._obj.obj_cls))
+        elif hasattr(self._obj, 'canUpdate') and self._obj.canUpdate:
+            self._parsed_lines.extend(self._build_doc('object_tmpl.j2',
+                                                      obj=self._obj))
